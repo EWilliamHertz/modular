@@ -3,6 +3,8 @@ import { revalidatePath } from "next/cache";
 import Link from "next/link";
 import DraggableLessonList from "@/components/DraggableLessonList";
 import AddLessonForm from "@/components/AddLessonForm";
+import ProfileSettingsForm from "@/components/ProfileSettingsForm";
+import CreateCourseForm from "@/components/CreateCourseForm";
 import { auth, signIn, signOut } from "@/auth";
 
 async function ensureDatabaseSchema() {
@@ -16,11 +18,15 @@ async function ensureDatabaseSchema() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    // Upgrade table dynamically if missing columns
+    // Dynamic schema upgrades
     await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS name VARCHAR(255);`);
     await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT;`);
     await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS portfolio_url VARCHAR(255);`);
     await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS resume_text TEXT;`);
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS show_resume BOOLEAN DEFAULT true;`);
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS show_portfolio BOOLEAN DEFAULT true;`);
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS portfolio_items JSONB DEFAULT '[]';`);
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS resume_pdf_data TEXT;`);
     
     await query(`
       CREATE TABLE IF NOT EXISTS courses (
@@ -33,6 +39,7 @@ async function ensureDatabaseSchema() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
+    await query(`ALTER TABLE courses ADD COLUMN IF NOT EXISTS image_url VARCHAR(255);`);
     await query(`
       CREATE TABLE IF NOT EXISTS lessons (
         id SERIAL PRIMARY KEY,
@@ -59,10 +66,19 @@ async function updateProfileAction(formData: FormData) {
 
   const name = formData.get('name');
   const bio = formData.get('bio');
-  const portfolio = formData.get('portfolio');
-  const resume = formData.get('resume');
+  const resumeText = formData.get('resume_text');
+  
+  const showResume = formData.get('show_resume') === 'true';
+  const showPortfolio = formData.get('show_portfolio') === 'true';
+  const portfolioItems = formData.get('portfolio_items') || '[]';
+  const resumePdfData = formData.get('resume_pdf_data') || '';
 
-  await query('UPDATE users SET name = $1, bio = $2, portfolio_url = $3, resume_text = $4 WHERE email = $5', [name, bio, portfolio, resume, session.user.email]);
+  await query(`
+    UPDATE users 
+    SET name = $1, bio = $2, resume_text = $3, show_resume = $4, show_portfolio = $5, portfolio_items = $6, resume_pdf_data = $7
+    WHERE email = $8
+  `, [name, bio, resumeText, showResume, showPortfolio, portfolioItems, resumePdfData, session.user.email]);
+  
   revalidatePath('/');
 }
 
@@ -73,15 +89,16 @@ async function createCourseAction(formData: FormData) {
 
   const title = formData.get('title');
   const description = formData.get('description');
+  const imageUrl = formData.get('image_url');
   const priceStr = formData.get('price');
   const priceCents = priceStr ? Math.round(parseFloat(priceStr as string) * 100) : 0;
 
   if (!title || !description) return;
 
   await query(`
-    INSERT INTO courses (creator_id, title, description, is_published, price_cents)
-    VALUES ($1, $2, $3, $4, $5)
-  `, [session.user.email, title, description, false, priceCents]);
+    INSERT INTO courses (creator_id, title, description, is_published, price_cents, image_url)
+    VALUES ($1, $2, $3, $4, $5, $6)
+  `, [session.user.email, title, description, false, priceCents, imageUrl]);
   revalidatePath('/');
 }
 
@@ -111,13 +128,14 @@ async function deleteCourseAction(formData: FormData) {
 // MAIN PAGE COMPONENT
 // ------------------------------------------------------------------
 
-export default async function Home({ searchParams }: { searchParams: Promise<{ view?: string; authTab?: string; courseId?: string; email?: string }> }) {
+export default async function Home({ searchParams }: { searchParams: Promise<{ view?: string; authTab?: string; courseId?: string; email?: string; q?: string }> }) {
   const params = await searchParams;
   const session = await auth();
-  const currentView = params.view || (session ? 'dashboard' : 'landing'); 
+  const currentView = params.view || 'landing'; 
   const currentAuthTab = params.authTab || 'signin';
   const activeCourseId = params.courseId;
   const targetEmail = params.email;
+  const searchQuery = params.q || '';
 
   await ensureDatabaseSchema();
 
@@ -127,22 +145,14 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
   let activeLessons: any[] = [];
   let userProfile: any = null;
   
-  // Public Profile specific variables
   let profileUser: any = null;
   let profileCourses: any[] = [];
+  
+  // Search State
+  let searchResults = { courses: [] as any[], users: [] as any[] };
 
   try {
-    // 1. Fetch Public Catalog
-    const catalogRes = await query(`
-      SELECT c.*, COALESCE(u.name, split_part(c.creator_id, '@', 1)) as author_name 
-      FROM courses c 
-      LEFT JOIN users u ON c.creator_id = u.email 
-      WHERE c.is_published = true 
-      ORDER BY c.created_at DESC
-    `);
-    catalogCourses = catalogRes.rows;
-
-    // 2. Fetch Active User Data (If logged in)
+    // 1. Fetch Active User Data (If logged in)
     if (session?.user?.email) {
       const userRes = await query('SELECT * FROM users WHERE email = $1', [session.user.email]);
       userProfile = userRes.rows[0];
@@ -151,7 +161,18 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
       myCourses = myCoursesRes.rows;
     }
 
-    // 3. Fetch Active Course Data (If reading or editing)
+    // 2. Fetch specific view data to prevent over-querying
+    if (currentView === 'catalog' || currentView === 'landing') {
+      const catalogRes = await query(`
+        SELECT c.*, COALESCE(u.name, split_part(c.creator_id, '@', 1)) as author_name 
+        FROM courses c 
+        LEFT JOIN users u ON c.creator_id = u.email 
+        WHERE c.is_published = true 
+        ORDER BY c.created_at DESC
+      `);
+      catalogCourses = catalogRes.rows;
+    }
+
     if (activeCourseId) {
       const courseRes = await query(`
         SELECT c.*, COALESCE(u.name, split_part(c.creator_id, '@', 1)) as author_name 
@@ -167,14 +188,27 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
       }
     }
 
-    // 4. Fetch Public Profile Data
     if (currentView === 'profile' && targetEmail) {
-      const profileRes = await query('SELECT name, bio, portfolio_url, resume_text, email FROM users WHERE email = $1', [targetEmail]);
+      const profileRes = await query('SELECT * FROM users WHERE email = $1', [targetEmail]);
       profileUser = profileRes.rows[0];
       if (profileUser) {
         const pcRes = await query('SELECT * FROM courses WHERE creator_id = $1 AND is_published = true ORDER BY created_at DESC', [targetEmail]);
         profileCourses = pcRes.rows;
       }
+    }
+
+    // 3. Search Executions
+    if (currentView === 'search' && searchQuery) {
+      const cRes = await query(`
+        SELECT c.*, COALESCE(u.name, split_part(c.creator_id, '@', 1)) as author_name 
+        FROM courses c 
+        LEFT JOIN users u ON c.creator_id = u.email 
+        WHERE c.is_published = true AND (c.title ILIKE $1 OR c.description ILIKE $1)
+      `, [`%${searchQuery}%`]);
+      searchResults.courses = cRes.rows;
+
+      const uRes = await query(`SELECT * FROM users WHERE name ILIKE $1 OR bio ILIKE $1`, [`%${searchQuery}%`]);
+      searchResults.users = uRes.rows;
     }
   } catch (error) {
     console.error('Database routing error:', error);
@@ -183,54 +217,135 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
   const isLoggedIn = !!session;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 selection:bg-indigo-500 selection:text-white pb-24">
-      {/* Header */}
+    <div className="min-h-screen bg-[#FDFDFD] text-slate-900 selection:bg-indigo-500 selection:text-white pb-24 font-sans">
+      
+      {/* Dynamic Header Block with Global Search */}
       <header className="sticky top-0 z-40 w-full border-b border-slate-200/80 bg-white/80 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
-          <Link href={isLoggedIn ? "/?view=catalog" : "/?view=landing"} className="flex items-center gap-2 font-bold text-xl tracking-tight text-slate-900">
+          <Link href="/?view=landing" className="flex items-center gap-2 font-bold text-xl tracking-tight text-slate-900 flex-shrink-0">
             <span className="bg-indigo-600 text-white w-7 h-7 rounded-lg flex items-center justify-center font-black text-sm shadow-sm">μ</span>
-            <span>Course<span className="text-indigo-600 font-medium">Builder</span></span>
+            <span className="hidden sm:inline">Course<span className="text-indigo-600 font-medium">Builder</span></span>
           </Link>
-          
-          <div className="flex items-center gap-6">
+
+     {/* Global Search Bar (No Icon, Right-Shifted Text) */}
+          <form action="/" method="GET" className="flex-1 max-w-md mx-4 sm:mx-8 group">
+            <input type="hidden" name="view" value="search" />
+            <input 
+              type="text" 
+              name="q" 
+              defaultValue={searchQuery}
+              placeholder="Search courses, creators, portfolios..." 
+              className="w-full bg-slate-100 border border-slate-200 rounded-full pl-8 pr-6 py-2 text-sm focus:bg-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all shadow-sm group-hover:shadow-md" 
+            />
+          </form>     
+          <div className="flex items-center gap-4 sm:gap-6 flex-shrink-0">
             {isLoggedIn ? (
               <>
-                <Link href="/?view=catalog" className={`text-sm font-medium transition ${currentView === 'catalog' ? 'text-indigo-600' : 'text-slate-600 hover:text-slate-900'}`}>Catalog</Link>
+                <Link href="/?view=catalog" className={`hidden sm:block text-sm font-medium transition ${currentView === 'catalog' ? 'text-indigo-600' : 'text-slate-600 hover:text-slate-900'}`}>Catalog</Link>
                 <Link href="/?view=dashboard" className={`text-sm font-medium transition ${currentView === 'dashboard' ? 'text-indigo-600' : 'text-slate-600 hover:text-slate-900'}`}>Dashboard</Link>
                 <Link href="/?view=settings" className={`text-sm font-medium transition ${currentView === 'settings' ? 'text-indigo-600' : 'text-slate-600 hover:text-slate-900'}`}>Settings</Link>
                 <form action={async () => { 'use server'; await signOut({ redirectTo: '/' }); }}>
-                  <button type="submit" className="text-sm font-medium text-rose-600 hover:text-rose-700 transition ml-4 border-l border-slate-200 pl-4">Sign Out</button>
+                  <button type="submit" className="hidden sm:block text-sm font-medium text-rose-600 hover:text-rose-700 transition ml-2 border-l border-slate-200 pl-4">Sign Out</button>
                 </form>
               </>
             ) : (
               <>
-                <Link href="/?view=auth&authTab=signin" className="text-sm font-medium text-slate-600 hover:text-slate-900 transition">Sign In</Link>
-                <Link href="/?view=auth&authTab=signup" className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 transition">Get Started</Link>
+                <Link href="/?view=auth&authTab=signin" className="hidden sm:block text-sm font-medium text-slate-600 hover:text-slate-900 transition">Sign In</Link>
+                <Link href="/?view=auth&authTab=signup" className="rounded-full bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-slate-800 transition">Get Started</Link>
               </>
             )}
           </div>
         </div>
       </header>
 
-      {/* VIEW: Landing */}
+      {/* VIEW: Gentle Landing Page */}
       {currentView === 'landing' && (
         <div className="relative isolate overflow-hidden">
-          <div className="mx-auto max-w-7xl px-6 pt-20 pb-24 text-center sm:pt-28 lg:px-8">
+          {/* Soft background aesthetic */}
+          <div className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-indigo-50/50 via-white to-white"></div>
+          
+          <div className="mx-auto max-w-7xl px-6 pt-24 pb-32 text-center lg:px-8">
             <div className="mx-auto max-w-3xl">
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700 ring-1 ring-inset ring-indigo-700/10 mb-6 animate-fade-in">
-                Next.js + Neon Serverless SQL Stack
+              <span className="inline-flex items-center gap-2 rounded-full bg-indigo-50/80 border border-indigo-100 px-4 py-1.5 text-xs font-semibold text-indigo-700 mb-8 shadow-sm">
+                A gentle space for learning and sharing 🌱
               </span>
-              <h1 className="text-5xl font-extrabold tracking-tight text-slate-900 sm:text-6xl">
-                Turn audience content into <span className="text-indigo-600 bg-gradient-to-r from-indigo-600 to-violet-500 bg-clip-text text-transparent">interactive micro-courses</span>
+              <h1 className="text-5xl font-extrabold tracking-tight text-slate-900 sm:text-6xl mb-8 leading-tight">
+                Empower your ideas. <br/>
+                <span className="text-indigo-600 bg-gradient-to-r from-indigo-600 to-violet-500 bg-clip-text text-transparent">Build knowledge together.</span>
               </h1>
-              <p className="mt-6 text-lg leading-8 text-slate-600 max-w-2xl mx-auto">
-                Repurpose your blog posts, technical essays, or social threads into structured modular learning systems. Complete with rich-text builders, JSON progress tracking, and Stripe monetizations.
+              <p className="text-lg leading-relaxed text-slate-600 max-w-2xl mx-auto mb-10">
+                Welcome to a supportive platform designed for creators, educators, and lifelong learners. Effortlessly transform your expertise into structured micro-courses, showcase your professional portfolio, and connect with students at your own pace.
               </p>
-              <div className="mt-10 flex items-center justify-center gap-x-6">
-                <Link href="/?view=auth&authTab=signup" className="rounded-xl bg-slate-900 px-5 py-3 text-base font-semibold text-white shadow-md hover:bg-slate-800 transition">Build a Course Free</Link>
-                <Link href="/?view=catalog" className="text-base font-semibold leading-6 text-slate-900 hover:text-indigo-600 transition flex items-center gap-1">View Public Catalog →</Link>
+              
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16">
+                <Link href="/?view=auth&authTab=signup" className="w-full sm:w-auto rounded-full bg-slate-900 px-8 py-4 text-base font-bold text-white shadow-lg shadow-slate-900/20 hover:bg-slate-800 hover:scale-105 transition-all">
+                  Start creating for free
+                </Link>
+                <Link href="/?view=catalog" className="w-full sm:w-auto rounded-full bg-white border border-slate-200 px-8 py-4 text-base font-bold text-slate-700 shadow-sm hover:bg-slate-50 transition-all">
+                  Explore the Catalog
+                </Link>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* VIEW: Search Results */}
+      {currentView === 'search' && (
+        <div className="mx-auto max-w-7xl px-6 py-12">
+          <div className="border-b border-slate-200 pb-8 mb-10">
+            <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Search Results</h1>
+            <p className="text-slate-500 mt-2">Showing matches for "{searchQuery}"</p>
+          </div>
+
+          <div className="space-y-16">
+            {/* User Matches */}
+            <section>
+              <h2 className="text-xl font-bold text-slate-900 mb-6 flex items-center gap-2">
+                <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-md text-sm">{searchResults.users.length}</span>
+                People & Portfolios
+              </h2>
+              {searchResults.users.length === 0 ? (
+                <p className="text-slate-500 text-sm">No creators found matching that query.</p>
+              ) : (
+                <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                  {searchResults.users.map((user: any) => (
+                    <Link href={`/?view=profile&email=${encodeURIComponent(user.email)}`} key={user.id} className="block bg-white border border-slate-200 rounded-2xl p-6 shadow-sm hover:shadow-md hover:border-indigo-300 transition">
+                       <h3 className="font-bold text-lg text-slate-900 mb-1">{user.name || user.email.split('@')[0]}</h3>
+                       <p className="text-sm text-slate-500 line-clamp-2">{user.bio || 'Creator & Educator'}</p>
+                       <div className="mt-4 text-indigo-600 text-sm font-semibold">View Profile →</div>
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            {/* Course Matches */}
+            <section>
+              <h2 className="text-xl font-bold text-slate-900 mb-6 flex items-center gap-2">
+                <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-md text-sm">{searchResults.courses.length}</span>
+                Courses
+              </h2>
+              {searchResults.courses.length === 0 ? (
+                <p className="text-slate-500 text-sm">No published courses found matching that query.</p>
+              ) : (
+                <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                  {searchResults.courses.map((course: any) => (
+                    <Link href={`/?view=read&courseId=${course.id}`} key={course.id} className="group flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-6 shadow-sm hover:shadow-md hover:border-indigo-300 transition cursor-pointer">
+                      <div>
+                        <div className="flex items-center justify-between mb-4">
+                          <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-600">By {course.author_name}</span>
+                          <span className="text-lg font-black text-indigo-600">${(course.price_cents / 100).toFixed(2)}</span>
+                        </div>
+                        <h3 className="text-lg font-bold text-slate-900 line-clamp-1 mb-2 group-hover:text-indigo-600 transition">{course.title}</h3>
+                        <p className="text-sm text-slate-500 leading-relaxed line-clamp-3 mb-6">{course.description}</p>
+                      </div>
+                      <div className="mt-4 font-semibold text-sm text-indigo-600 flex items-center gap-1 group-hover:gap-2 transition-all">Read Course →</div>
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </section>
           </div>
         </div>
       )}
@@ -264,80 +379,105 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
 
       {/* VIEW: Settings */}
       {currentView === 'settings' && userProfile && (
-        <div className="mx-auto max-w-2xl px-6 py-12">
-          <h1 className="text-3xl font-extrabold tracking-tight text-slate-900 mb-2">Creator Profile</h1>
-          <p className="text-sm text-slate-500 mb-8">Set your public name, bio, and resume so students know who is teaching them.</p>
+        <div className="mx-auto max-w-3xl px-6 py-12">
+          <h1 className="text-3xl font-extrabold tracking-tight text-slate-900 mb-2">Creator Profile & Portfolio</h1>
+          <p className="text-sm text-slate-500 mb-8">Manage how you present your professional brand to your students.</p>
           
-          <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm">
-            <form action={updateProfileAction} className="space-y-5">
-              <div>
-                <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Account Email</label>
-                <input type="email" disabled value={userProfile.email} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-500 cursor-not-allowed" />
-              </div>
-              <div>
-                <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Public Display Name</label>
-                <input type="text" name="name" defaultValue={userProfile.name || ''} placeholder="e.g. Jane Doe" className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 outline-none transition" />
-              </div>
-              <div>
-                <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Portfolio URL</label>
-                <input type="url" name="portfolio" defaultValue={userProfile.portfolio_url || ''} placeholder="https://yourwebsite.com" className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 outline-none transition" />
-              </div>
-              <div>
-                <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Creator Bio (Short)</label>
-                <textarea name="bio" rows={3} defaultValue={userProfile.bio || ''} placeholder="Tell students about your expertise..." className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 outline-none transition"></textarea>
-              </div>
-              <div>
-                <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Resume & Professional Experience</label>
-                <textarea name="resume" rows={6} defaultValue={userProfile.resume_text || ''} placeholder="List your professional history, skills, and qualifications here. This will be shown on your public profile..." className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 outline-none transition"></textarea>
-              </div>
-              <button type="submit" className="bg-indigo-600 text-white rounded-xl px-6 py-2.5 text-sm font-bold shadow-sm hover:bg-indigo-500 transition">Save Profile Data</button>
-            </form>
-          </div>
+          <ProfileSettingsForm userProfile={userProfile} action={updateProfileAction} />
         </div>
       )}
 
       {/* VIEW: Public Author Profile */}
       {currentView === 'profile' && profileUser && (
         <div className="mx-auto max-w-4xl px-6 py-12">
-          <Link href="/?view=catalog" className="text-sm text-slate-500 hover:text-indigo-600 mb-8 inline-block">← Back to Catalog</Link>
           
-          <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-10 mb-10">
-            <h1 className="text-4xl font-black text-slate-900 mb-2">{profileUser.name || profileUser.email.split('@')[0]}</h1>
-            <p className="text-lg text-slate-600 mb-6 max-w-2xl">{profileUser.bio || 'No bio provided by this creator.'}</p>
-            
-            <div className="flex items-center gap-4">
-               {profileUser.portfolio_url && (
-                 <a href={profileUser.portfolio_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-lg text-sm font-bold hover:bg-slate-800 transition shadow-sm">
-                   View Portfolio Site ↗
-                 </a>
-               )}
-               <span className="text-slate-400 text-sm font-medium">Contact: {profileUser.email}</span>
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-10 mb-10 text-center">
+            <h1 className="text-4xl font-black text-slate-900 mb-4">{profileUser.name || profileUser.email.split('@')[0]}</h1>
+            <p className="text-lg text-slate-600 mb-6 max-w-2xl mx-auto">{profileUser.bio || 'Educator and creator.'}</p>
+            <div className="flex items-center justify-center gap-4">
+               <a href={`mailto:${profileUser.email}`} className="px-5 py-2.5 bg-slate-100 text-slate-700 rounded-full text-sm font-bold hover:bg-slate-200 transition shadow-sm">
+                 Contact Me
+               </a>
             </div>
-
-            {profileUser.resume_text && (
-               <div className="mt-10 pt-10 border-t border-slate-100">
-                 <h3 className="font-bold text-slate-900 mb-4 text-xl">Resume & Experience</h3>
-                 <div className="prose text-slate-600 whitespace-pre-wrap max-w-none">{profileUser.resume_text}</div>
-               </div>
-            )}
           </div>
 
-          <h3 className="font-bold text-slate-900 mb-6 text-xl border-b border-slate-200 pb-2">Courses by this Author</h3>
-          {profileCourses.length === 0 ? (
-            <p className="text-slate-500">This author has no published courses yet.</p>
-          ) : (
-            <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-              {profileCourses.map((course: any) => (
-                <Link href={`/?view=read&courseId=${course.id}`} key={course.id} className="group rounded-2xl border border-slate-200 bg-white p-6 shadow-sm hover:shadow-md hover:border-indigo-300 transition cursor-pointer">
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="text-lg font-black text-indigo-600">${(course.price_cents / 100).toFixed(2)}</span>
-                  </div>
-                  <h3 className="text-lg font-bold text-slate-900 line-clamp-1 mb-2 group-hover:text-indigo-600 transition">{course.title}</h3>
-                  <p className="text-sm text-slate-500 leading-relaxed line-clamp-2">{course.description}</p>
-                </Link>
-              ))}
-            </div>
-          )}
+          <div className="space-y-16">
+            
+            {/* Conditional Resume Block */}
+            {profileUser.show_resume && (profileUser.resume_pdf_data || profileUser.resume_text) && (
+               <section>
+                 <h3 className="font-bold text-slate-900 mb-6 text-2xl">The following is the resume from this person</h3>
+                 <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm">
+                   {profileUser.resume_pdf_data ? (
+                     <div className="flex flex-col items-center justify-center py-10">
+                       <div className="w-16 h-16 bg-rose-100 text-rose-500 rounded-2xl flex items-center justify-center mb-4">
+                         <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                       </div>
+                       <h4 className="text-lg font-bold text-slate-900 mb-2">Professional Resume</h4>
+                       <a href={profileUser.resume_pdf_data} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 bg-rose-500 text-white px-6 py-2.5 rounded-full font-bold shadow-md hover:bg-rose-600 transition hover:-translate-y-0.5">
+                         View PDF in New Tab ↗
+                       </a>
+                     </div>
+                   ) : (
+                     <div className="prose text-slate-600 whitespace-pre-wrap max-w-none">{profileUser.resume_text}</div>
+                   )}
+                 </div>
+               </section>
+            )}
+
+            {/* Conditional Portfolio Block */}
+            {profileUser.show_portfolio && profileUser.portfolio_items && (
+               <section>
+                 <h3 className="font-bold text-slate-900 mb-6 text-2xl">This person is an entrepreneur and has the following as his portfolio:</h3>
+                 {(() => {
+                   const items = typeof profileUser.portfolio_items === 'string' ? JSON.parse(profileUser.portfolio_items) : profileUser.portfolio_items;
+                   if (items.length === 0) return <p className="text-slate-500 italic bg-slate-50 p-6 rounded-xl border border-slate-200">Portfolio is currently being updated.</p>;
+                   
+                   return (
+                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                       {items.map((item: any, idx: number) => (
+                         <a key={idx} href={item.link} target="_blank" rel="noopener noreferrer" className="group block border border-slate-200 rounded-2xl overflow-hidden hover:shadow-lg transition hover:border-indigo-300 bg-white flex flex-col h-full">
+                           {item.image ? (
+                             <img src={item.image} alt={item.title} className="w-full h-48 object-cover border-b border-slate-100" />
+                           ) : (
+                             <div className="w-full h-48 bg-slate-100 flex items-center justify-center text-slate-400">No Image</div>
+                           )}
+                           <div className="p-6 flex-1 flex flex-col">
+                             <h4 className="font-bold text-slate-900 text-lg mb-2 group-hover:text-indigo-600 transition">{item.title}</h4>
+                             <p className="text-sm text-slate-600 mb-4 flex-1">{item.description}</p>
+                             <div className="text-xs font-bold text-indigo-500 uppercase tracking-wider">Visit Project →</div>
+                           </div>
+                         </a>
+                       ))}
+                     </div>
+                   );
+                 })()}
+               </section>
+            )}
+
+            {/* Author Courses */}
+            <section>
+              <h3 className="font-bold text-slate-900 mb-6 text-2xl border-b border-slate-200 pb-4">Courses Created</h3>
+              {profileCourses.length === 0 ? (
+                <p className="text-slate-500">This author has no published courses yet.</p>
+              ) : (
+                <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                  {profileCourses.map((course: any) => (
+                    <Link href={`/?view=read&courseId=${course.id}`} key={course.id} className="group rounded-2xl border border-slate-200 bg-white p-6 shadow-sm hover:shadow-md hover:border-indigo-300 transition cursor-pointer flex flex-col justify-between">
+                      <div>
+                        <div className="flex items-center justify-between mb-4">
+                          <span className="text-lg font-black text-indigo-600">${(course.price_cents / 100).toFixed(2)}</span>
+                        </div>
+                        <h3 className="text-lg font-bold text-slate-900 line-clamp-1 mb-2 group-hover:text-indigo-600 transition">{course.title}</h3>
+                        <p className="text-sm text-slate-500 leading-relaxed line-clamp-2 mb-4">{course.description}</p>
+                      </div>
+                      <div className="text-sm font-semibold text-indigo-600">Explore Curriculum →</div>
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
         </div>
       )}
 
@@ -443,7 +583,6 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
              <div>
                 <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm sticky top-24">
                   <h3 className="font-bold text-slate-900 mb-6 text-lg">Add New Lesson</h3>
-                  {/* We now use the isolated Client Component to force the form to clear! */}
                   <AddLessonForm courseId={activeCourse.id} />
                 </div>
              </div>
@@ -461,23 +600,9 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
             </div>
           </div>
 
-          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm mb-10">
+          <div className="mb-10">
             <h2 className="text-lg font-bold text-slate-900 mb-4">Create a New Course</h2>
-            <form action={createCourseAction} className="flex flex-col sm:flex-row gap-4 items-end">
-               <div className="flex-1 w-full">
-                  <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Course Title</label>
-                  <input type="text" name="title" required placeholder="e.g. Next.js App Router Masterclass" className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 outline-none transition" />
-               </div>
-               <div className="flex-1 w-full">
-                  <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Short Description</label>
-                  <input type="text" name="description" required placeholder="What will students learn in this course?" className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 outline-none transition" />
-               </div>
-               <div className="w-full sm:w-32">
-                  <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Price ($)</label>
-                  <input type="number" name="price" step="0.01" min="0" required placeholder="29.00" className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 outline-none transition" />
-               </div>
-               <button type="submit" className="w-full sm:w-auto bg-indigo-600 text-white rounded-xl px-6 py-2.5 text-sm font-bold shadow-sm hover:bg-indigo-500 transition h-[42px]">Create</button>
-            </form>
+            <CreateCourseForm action={createCourseAction} />
           </div>
 
           {myCourses.length === 0 ? (
@@ -489,9 +614,17 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
           ) : (
             <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
               {myCourses.map((course: any) => (
-                <div key={course.id} className="group flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-6 shadow-sm hover:shadow-md transition">
+                <div key={course.id} className="group flex flex-col justify-between rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-sm hover:shadow-md transition">
                   <div>
-                    <div className="flex items-center justify-between mb-4">
+                    {course.image_url ? (
+                      <img src={course.image_url} alt={course.title} className="w-full h-40 object-cover border-b border-slate-100" />
+                    ) : (
+                      <div className="w-full h-40 bg-gradient-to-br from-indigo-50 to-slate-100 flex items-center justify-center border-b border-slate-100">
+                         <span className="text-indigo-200 font-black text-4xl">μ</span>
+                      </div>
+                    )}
+                    <div className="p-6 pb-2">
+                      <div className="flex items-center justify-between mb-3">
                       <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${course.is_published ? 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/10' : 'bg-slate-100 text-slate-600'}`}>
                         {course.is_published ? 'Published' : 'Draft'}
                       </span>
