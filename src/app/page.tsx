@@ -1,11 +1,22 @@
 import { query } from "@/lib/db";
 import { revalidatePath } from "next/cache";
 import Link from "next/link";
+import DraggableLessonList from "@/components/DraggableLessonList";
+import RichTextEditor from "@/components/RichTextEditor";
+import { auth, signIn, signOut } from "@/auth";
 
 // Server-side initialization action to ensure Neon schema tables exist
 async function ensureDatabaseSchema() {
   'use server';
   try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
     await query(`
       CREATE TABLE IF NOT EXISTS courses (
         id SERIAL PRIMARY KEY,
@@ -43,60 +54,126 @@ async function ensureDatabaseSchema() {
   }
 }
 
-// Action to generate new course content directly inside the Neon instance
-async function addSampleCourseAction() {
+// Server Action to delete a course and securely cascade delete its lessons
+async function deleteCourseAction(formData: FormData) {
   'use server';
+  const courseId = formData.get('courseId');
+  if (!courseId) return;
+
+  try {
+    await query('DELETE FROM courses WHERE id = $1', [courseId]);
+    revalidatePath('/');
+  } catch (error) {
+    console.error('Error deleting course:', error);
+  }
+}
+
+// Server Action to create a custom user course securely linked to Auth session
+async function createCourseAction(formData: FormData) {
+  'use server';
+  const session = await auth();
+  if (!session || !session.user?.email) return;
+
+  const title = formData.get('title');
+  const description = formData.get('description');
+  const priceStr = formData.get('price');
+  const priceCents = priceStr ? Math.round(parseFloat(priceStr as string) * 100) : 0;
+
+  if (!title || !description) return;
+
   try {
     await ensureDatabaseSchema();
     await query(`
       INSERT INTO courses (creator_id, title, description, is_published, price_cents)
       VALUES ($1, $2, $3, $4, $5)
-    `, [
-      'creator_' + Math.floor(Math.random() * 1000), 
-      'Mastering Twitter Threads to Micro-Courses', 
-      'Learn the systematic pipeline to transform short-form thought leadership social hooks into monetizable premium text-and-JSON educational assets.', 
-      true, 
-      2900
-    ]);
+    `, [session.user.email, title, description, false, priceCents]);
     revalidatePath('/');
   } catch (error) {
-    console.error('Error running sample data insertion:', error);
+    console.error('Error creating user course:', error);
   }
 }
 
-export default async function Home({ searchParams }: { searchParams: Promise<{ view?: string; authTab?: string }> }) {
+// New Server Action to create lessons securely inside the Neon database
+async function createLessonAction(formData: FormData) {
+  'use server';
+  const courseId = formData.get('courseId');
+  const title = formData.get('title');
+  const content = formData.get('content');
+
+  if (!courseId || !title) return;
+
+  try {
+    await query(`
+      INSERT INTO lessons (course_id, title, content_json, sort_order)
+      VALUES ($1, $2, $3, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM lessons WHERE course_id = $1))
+    `, [courseId, title, JSON.stringify({ html: content })]);
+    revalidatePath('/');
+  } catch (error) {
+    console.error('Error adding lesson:', error);
+  }
+}
+
+export default async function Home({ searchParams }: { searchParams: Promise<{ view?: string; authTab?: string; courseId?: string }> }) {
   const params = await searchParams;
-  const currentView = params.view || 'landing'; 
+  const session = await auth();
+  const currentView = params.view || (session ? 'dashboard' : 'landing'); 
   const currentAuthTab = params.authTab || 'signin';
+  const activeCourseId = params.courseId;
 
   // Attempt database synchronization prior to initial rendering layout
   await ensureDatabaseSchema();
 
-  let courses: any[] = [];
+  let allCourses: any[] = [];
+  let activeCourse: any = null;
+  let activeLessons: any[] = [];
   let dbError = false;
+
   try {
     const result = await query('SELECT * FROM courses ORDER BY created_at DESC');
-    courses = result.rows;
+    allCourses = result.rows;
+
+    // If viewing or editing a specific course, fetch its metadata and sequential lessons
+    if (activeCourseId) {
+      const courseRes = await query('SELECT * FROM courses WHERE id = $1', [activeCourseId]);
+      if (courseRes.rows.length > 0) {
+        activeCourse = courseRes.rows[0];
+        const lessonsRes = await query('SELECT * FROM lessons WHERE course_id = $1 ORDER BY sort_order ASC', [activeCourseId]);
+        activeLessons = lessonsRes.rows;
+      }
+    }
   } catch (error) {
     console.error('Failed to read live table state:', error);
     dbError = true;
   }
+
+  // Use the verified NextAuth session
+  const isLoggedIn = !!session;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 selection:bg-indigo-500 selection:text-white">
       {/* Dynamic Header Block */}
       <header className="sticky top-0 z-40 w-full border-b border-slate-200/80 bg-white/80 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
-          <Link href="/?view=landing" className="flex items-center gap-2 font-bold text-xl tracking-tight text-slate-900">
+          <Link href={isLoggedIn ? "/?view=catalog" : "/?view=landing"} className="flex items-center gap-2 font-bold text-xl tracking-tight text-slate-900">
             <span className="bg-indigo-600 text-white w-7 h-7 rounded-lg flex items-center justify-center font-black text-sm shadow-sm">μ</span>
             <span>Course<span className="text-indigo-600 font-medium">Builder</span></span>
           </Link>
           
-          <div className="flex items-center gap-4">
-            {currentView === 'dashboard' ? (
-              <Link href="/?view=landing" className="text-sm font-medium text-slate-600 hover:text-slate-900 transition">
-                Sign Out
-              </Link>
+          <div className="flex items-center gap-6">
+            {isLoggedIn ? (
+              <>
+                <Link href="/?view=catalog" className={`text-sm font-medium transition ${currentView === 'catalog' ? 'text-indigo-600' : 'text-slate-600 hover:text-slate-900'}`}>
+                  Catalog
+                </Link>
+                <Link href="/?view=dashboard" className={`text-sm font-medium transition ${currentView === 'dashboard' ? 'text-indigo-600' : 'text-slate-600 hover:text-slate-900'}`}>
+                  Dashboard
+                </Link>
+                <form action={async () => { 'use server'; await signOut({ redirectTo: '/' }); }}>
+                  <button type="submit" className="text-sm font-medium text-rose-600 hover:text-rose-700 transition ml-4 border-l border-slate-200 pl-4">
+                    Sign Out
+                  </button>
+                </form>
+              </>
             ) : (
               <>
                 <Link href="/?view=auth&authTab=signin" className="text-sm font-medium text-slate-600 hover:text-slate-900 transition">
@@ -160,7 +237,6 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
       {currentView === 'auth' && (
         <div className="flex flex-col items-center justify-center pt-20 pb-24 px-6">
           <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 shadow-xl">
-            {/* Navigational Tabs Control */}
             <div className="flex border-b border-slate-100 mb-8 p-1 bg-slate-100 rounded-xl">
               <Link 
                 href="/?view=auth&authTab=signin" 
@@ -183,36 +259,147 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
               {currentAuthTab === 'signin' ? 'Log into your administrator backend profile' : 'Set up parameters to start monetizing writing fragments'}
             </p>
 
-           <div className="space-y-4">
+           <form action={async (formData) => {
+             'use server';
+             await signIn('credentials', formData, { redirectTo: '/?view=dashboard' });
+           }} className="space-y-4">
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wide text-slate-600 mb-1">Email Address</label>
-                <input type="email" placeholder="name@domain.com" className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition" />
+                <input type="email" name="email" required placeholder="name@domain.com" className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition" />
               </div>
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wide text-slate-600 mb-1">Password</label>
-                <input type="password" placeholder="••••••••" className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition" />
+                <input type="password" name="password" required placeholder="••••••••" className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition" />
               </div>
               
-              <Link href="/?view=dashboard" className="w-full mt-2 inline-flex items-center justify-center rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-indigo-500 transition">
+              <button type="submit" className="w-full mt-2 inline-flex items-center justify-center rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow hover:bg-indigo-500 transition">
                 {currentAuthTab === 'signin' ? 'Access Workspace Account' : 'Generate New Workspace'}
-              </Link>
-            </div>
+              </button>
+            </form>
           </div>
+        </div>
+      )}
+
+      {/* Render Perspective View: Public Course Catalog */}
+      {currentView === 'catalog' && (
+        <div className="mx-auto max-w-7xl px-6 py-12">
+          <div className="border-b border-slate-200 pb-8 mb-10">
+            <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Course Catalog</h1>
+            <p className="text-sm text-slate-500 mt-1">Discover micro-courses constructed by creators around the world.</p>
+          </div>
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {allCourses.map((course: any) => (
+              <Link href={`/?view=read&courseId=${course.id}`} key={course.id} className="group flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-6 shadow-sm hover:shadow-md hover:border-indigo-300 transition cursor-pointer">
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-600">
+                      Author: {course.creator_id}
+                    </span>
+                    <span className="text-lg font-black text-indigo-600">${(course.price_cents / 100).toFixed(2)}</span>
+                  </div>
+                  <h3 className="text-lg font-bold text-slate-900 line-clamp-1 mb-2 group-hover:text-indigo-600 transition">{course.title}</h3>
+                  <p className="text-sm text-slate-500 leading-relaxed line-clamp-3 mb-6">{course.description}</p>
+                </div>
+                <div className="mt-4 font-semibold text-sm text-indigo-600 flex items-center gap-1 group-hover:gap-2 transition-all">
+                  Read Course →
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Render Perspective View: Read Course Content */}
+      {currentView === 'read' && activeCourse && (
+        <div className="mx-auto max-w-3xl px-6 py-12">
+          <Link href="/?view=catalog" className="text-sm text-slate-500 hover:text-indigo-600 mb-8 inline-block">← Back to Catalog</Link>
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-10 mb-10 text-center">
+            <span className="inline-block px-3 py-1 bg-indigo-50 text-indigo-700 text-xs font-bold rounded-full mb-4">Course Preview</span>
+            <h1 className="text-4xl font-black text-slate-900 mb-4 tracking-tight">{activeCourse.title}</h1>
+            <p className="text-lg text-slate-600 max-w-xl mx-auto">{activeCourse.description}</p>
+          </div>
+
+          <div className="space-y-8">
+            {activeLessons.length === 0 ? (
+              <p className="text-center text-slate-500 py-12">The creator has not published any lessons for this course yet.</p>
+            ) : (
+              activeLessons.map((lesson: any, index: number) => (
+                <div key={lesson.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                  <div className="bg-slate-50 border-b border-slate-200 px-8 py-5 flex items-center gap-4">
+                     <div className="bg-indigo-600 text-white font-black w-8 h-8 flex items-center justify-center rounded-full text-sm">{index + 1}</div>
+                     <h2 className="text-xl font-bold text-slate-900">{lesson.title}</h2>
+                  </div>
+                  <div className="p-8 text-slate-700 leading-relaxed prose max-w-none" dangerouslySetInnerHTML={{ __html: lesson.content_json?.html || lesson.content_json?.text || "No content provided." }} />
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Render Perspective View: Course Builder Editor */}
+      {currentView === 'editor' && activeCourse && (
+        <div className="mx-auto max-w-6xl px-6 py-12">
+           <Link href="/?view=dashboard" className="text-sm text-slate-500 hover:text-indigo-600 mb-6 inline-block">← Back to Dashboard</Link>
+           <h1 className="text-3xl font-extrabold text-slate-900 mb-2">Editing: {activeCourse.title}</h1>
+           <p className="text-slate-600 mb-10 max-w-2xl">{activeCourse.description}</p>
+
+           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+             <div className="lg:col-span-2 space-y-6">
+                <h2 className="text-xl font-bold text-slate-900 border-b pb-2 mb-4">Course Curriculum</h2>
+                <DraggableLessonList initialLessons={activeLessons} />
+             </div>
+             
+             <div>
+                <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm sticky top-24">
+                  <h3 className="font-bold text-slate-900 mb-6 text-lg">Add New Lesson</h3>
+                  <form action={createLessonAction} className="space-y-5">
+                    <input type="hidden" name="courseId" value={activeCourse.id} />
+                    <div>
+                      <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Lesson Title</label>
+                      <input type="text" name="title" required placeholder="e.g. Introduction to logic" className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 outline-none transition" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Lesson Content</label>
+                      <RichTextEditor name="content" />
+                    </div>
+                    <button type="submit" className="w-full bg-indigo-600 text-white rounded-xl py-3 text-sm font-bold shadow-sm hover:bg-indigo-500 transition">Save Lesson Record</button>
+                  </form>
+                </div>
+             </div>
+           </div>
         </div>
       )}
 
       {/* Render Perspective View: Database Course Dashboard Workspace */}
       {currentView === 'dashboard' && (
         <div className="mx-auto max-w-7xl px-6 py-12">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-slate-200 pb-8 mb-10 gap-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-slate-200 pb-8 mb-8 gap-4">
             <div>
               <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Creator Hub Dashboard</h1>
-              <p className="text-sm text-slate-500 mt-1">Live inspection point connected to Neon Serverless Instance</p>
+              <p className="text-sm text-slate-500 mt-1">Manage your interactive courses and modules.</p>
             </div>
-            <form action={addSampleCourseAction}>
-              <button type="submit" className="inline-flex items-center justify-center rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-md hover:bg-indigo-500 transition">
-                + Seed Live Course
-              </button>
+          </div>
+
+          {/* Course Creation Form Widget */}
+          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm mb-10">
+            <h2 className="text-lg font-bold text-slate-900 mb-4">Create a New Course</h2>
+            <form action={createCourseAction} className="flex flex-col sm:flex-row gap-4 items-end">
+               <div className="flex-1 w-full">
+                  <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Course Title</label>
+                  <input type="text" name="title" required placeholder="e.g. Next.js App Router Masterclass" className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 outline-none transition" />
+               </div>
+               <div className="flex-1 w-full">
+                  <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Short Description</label>
+                  <input type="text" name="description" required placeholder="What will students learn in this course?" className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 outline-none transition" />
+               </div>
+               <div className="w-full sm:w-32">
+                  <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Price ($)</label>
+                  <input type="number" name="price" step="0.01" min="0" required placeholder="29.00" className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 outline-none transition" />
+               </div>
+               <button type="submit" className="w-full sm:w-auto bg-indigo-600 text-white rounded-xl px-6 py-2.5 text-sm font-bold shadow-sm hover:bg-indigo-500 transition h-[42px]">
+                 Create
+               </button>
             </form>
           </div>
 
@@ -221,16 +408,16 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
               <h3 className="font-bold mb-1 text-base">Neon Data Processing Connection Fault</h3>
               <p className="text-sm text-rose-700">Unable to accurately verify data matrices. Verify your system environment keys in `.env.local` are complete.</p>
             </div>
-          ) : courses.length === 0 ? (
+          ) : allCourses.length === 0 ? (
             <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-white p-16 text-center">
               <div className="mx-auto w-12 h-12 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-center text-slate-400 font-bold text-xl mb-4">ø</div>
-              <h3 className="text-lg font-bold text-slate-900 mb-1">No operational courses instantiated</h3>
-              <p className="text-sm text-slate-500 max-w-md mx-auto mb-6">Your connection string is live and tables are verified! Click the seed button above to transmit record metrics via server-side operational tunnels.</p>
+              <h3 className="text-lg font-bold text-slate-900 mb-1">No courses found</h3>
+              <p className="text-sm text-slate-500 max-w-md mx-auto mb-6">Use the form above to build and instantiate your very first micro-course!</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-              {courses.map((course: any) => (
-                <div key={course.id} className="flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-6 shadow-sm hover:shadow-md transition">
+              {allCourses.map((course: any) => (
+                <div key={course.id} className="group flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-6 shadow-sm hover:shadow-md transition">
                   <div>
                     <div className="flex items-center justify-between mb-4">
                       <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-600/10">
@@ -241,9 +428,16 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
                     <h3 className="text-lg font-bold text-slate-900 line-clamp-1 mb-2">{course.title}</h3>
                     <p className="text-sm text-slate-500 leading-relaxed line-clamp-3 mb-6">{course.description}</p>
                   </div>
-                  <div className="border-t border-slate-100 pt-4 flex items-center justify-between text-xs text-slate-400">
-                    <span>ID: {course.id}</span>
-                    <span>Creator: {course.creator_id}</span>
+                  <div className="border-t border-slate-100 pt-4 flex items-center justify-between text-xs">
+                    <Link href={`/?view=editor&courseId=${course.id}`} className="text-indigo-600 font-bold flex items-center gap-1 hover:gap-2 transition-all">
+                      Edit Course Builder →
+                    </Link>
+                    <form action={deleteCourseAction}>
+                      <input type="hidden" name="courseId" value={course.id} />
+                      <button type="submit" className="text-rose-500 hover:text-rose-700 font-semibold transition">
+                        Delete
+                      </button>
+                    </form>
                   </div>
                 </div>
               ))}
