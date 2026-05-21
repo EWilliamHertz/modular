@@ -2,7 +2,7 @@ import { query } from "@/lib/db";
 import { revalidatePath } from "next/cache";
 import Link from "next/link";
 import DraggableLessonList from "@/components/DraggableLessonList";
-import RichTextEditor from "@/components/RichTextEditor";
+import AddLessonForm from "@/components/AddLessonForm";
 import { auth, signIn, signOut } from "@/auth";
 
 async function ensureDatabaseSchema() {
@@ -19,6 +19,8 @@ async function ensureDatabaseSchema() {
     // Upgrade table dynamically if missing columns
     await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS name VARCHAR(255);`);
     await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT;`);
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS portfolio_url VARCHAR(255);`);
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS resume_text TEXT;`);
     
     await query(`
       CREATE TABLE IF NOT EXISTS courses (
@@ -57,8 +59,10 @@ async function updateProfileAction(formData: FormData) {
 
   const name = formData.get('name');
   const bio = formData.get('bio');
+  const portfolio = formData.get('portfolio');
+  const resume = formData.get('resume');
 
-  await query('UPDATE users SET name = $1, bio = $2 WHERE email = $3', [name, bio, session.user.email]);
+  await query('UPDATE users SET name = $1, bio = $2, portfolio_url = $3, resume_text = $4 WHERE email = $5', [name, bio, portfolio, resume, session.user.email]);
   revalidatePath('/');
 }
 
@@ -89,7 +93,6 @@ async function togglePublishAction(formData: FormData) {
   const courseId = formData.get('courseId');
   const currentStatus = formData.get('currentStatus') === 'true';
 
-  // Secure update: only allow if creator matches session email
   await query('UPDATE courses SET is_published = $1 WHERE id = $2 AND creator_id = $3', [!currentStatus, courseId, session.user.email]);
   revalidatePath('/');
 }
@@ -100,30 +103,7 @@ async function deleteCourseAction(formData: FormData) {
   if (!session?.user?.email) return;
 
   const courseId = formData.get('courseId');
-  // Secure delete
   await query('DELETE FROM courses WHERE id = $1 AND creator_id = $2', [courseId, session.user.email]);
-  revalidatePath('/');
-}
-
-async function createLessonAction(formData: FormData) {
-  'use server';
-  const session = await auth();
-  if (!session?.user?.email) return;
-
-  const courseId = formData.get('courseId');
-  const title = formData.get('title');
-  const content = formData.get('content');
-
-  if (!courseId || !title) return;
-
-  // Security Check: Verify user owns the course before adding a lesson
-  const courseRes = await query('SELECT id FROM courses WHERE id = $1 AND creator_id = $2', [courseId, session.user.email]);
-  if (courseRes.rowCount === 0) throw new Error("Unauthorized");
-
-  await query(`
-    INSERT INTO lessons (course_id, title, content_json, sort_order)
-    VALUES ($1, $2, $3, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM lessons WHERE course_id = $1))
-  `, [courseId, title, JSON.stringify({ html: content })]);
   revalidatePath('/');
 }
 
@@ -131,12 +111,13 @@ async function createLessonAction(formData: FormData) {
 // MAIN PAGE COMPONENT
 // ------------------------------------------------------------------
 
-export default async function Home({ searchParams }: { searchParams: Promise<{ view?: string; authTab?: string; courseId?: string }> }) {
+export default async function Home({ searchParams }: { searchParams: Promise<{ view?: string; authTab?: string; courseId?: string; email?: string }> }) {
   const params = await searchParams;
   const session = await auth();
   const currentView = params.view || (session ? 'dashboard' : 'landing'); 
   const currentAuthTab = params.authTab || 'signin';
   const activeCourseId = params.courseId;
+  const targetEmail = params.email;
 
   await ensureDatabaseSchema();
 
@@ -145,9 +126,13 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
   let activeCourse: any = null;
   let activeLessons: any[] = [];
   let userProfile: any = null;
+  
+  // Public Profile specific variables
+  let profileUser: any = null;
+  let profileCourses: any[] = [];
 
   try {
-    // 1. Fetch Public Catalog (Only Published Courses, Joined with User Names)
+    // 1. Fetch Public Catalog
     const catalogRes = await query(`
       SELECT c.*, COALESCE(u.name, split_part(c.creator_id, '@', 1)) as author_name 
       FROM courses c 
@@ -157,7 +142,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
     `);
     catalogCourses = catalogRes.rows;
 
-    // 2. Fetch User Specific Data
+    // 2. Fetch Active User Data (If logged in)
     if (session?.user?.email) {
       const userRes = await query('SELECT * FROM users WHERE email = $1', [session.user.email]);
       userProfile = userRes.rows[0];
@@ -179,6 +164,16 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
         activeCourse = courseRes.rows[0];
         const lessonsRes = await query('SELECT * FROM lessons WHERE course_id = $1 ORDER BY sort_order ASC', [activeCourseId]);
         activeLessons = lessonsRes.rows;
+      }
+    }
+
+    // 4. Fetch Public Profile Data
+    if (currentView === 'profile' && targetEmail) {
+      const profileRes = await query('SELECT name, bio, portfolio_url, resume_text, email FROM users WHERE email = $1', [targetEmail]);
+      profileUser = profileRes.rows[0];
+      if (profileUser) {
+        const pcRes = await query('SELECT * FROM courses WHERE creator_id = $1 AND is_published = true ORDER BY created_at DESC', [targetEmail]);
+        profileCourses = pcRes.rows;
       }
     }
   } catch (error) {
@@ -271,7 +266,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
       {currentView === 'settings' && userProfile && (
         <div className="mx-auto max-w-2xl px-6 py-12">
           <h1 className="text-3xl font-extrabold tracking-tight text-slate-900 mb-2">Creator Profile</h1>
-          <p className="text-sm text-slate-500 mb-8">Set your public name and bio so students know who is teaching them.</p>
+          <p className="text-sm text-slate-500 mb-8">Set your public name, bio, and resume so students know who is teaching them.</p>
           
           <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm">
             <form action={updateProfileAction} className="space-y-5">
@@ -284,12 +279,65 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
                 <input type="text" name="name" defaultValue={userProfile.name || ''} placeholder="e.g. Jane Doe" className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 outline-none transition" />
               </div>
               <div>
-                <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Creator Bio</label>
-                <textarea name="bio" rows={4} defaultValue={userProfile.bio || ''} placeholder="Tell students about your expertise..." className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 outline-none transition"></textarea>
+                <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Portfolio URL</label>
+                <input type="url" name="portfolio" defaultValue={userProfile.portfolio_url || ''} placeholder="https://yourwebsite.com" className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 outline-none transition" />
+              </div>
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Creator Bio (Short)</label>
+                <textarea name="bio" rows={3} defaultValue={userProfile.bio || ''} placeholder="Tell students about your expertise..." className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 outline-none transition"></textarea>
+              </div>
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Resume & Professional Experience</label>
+                <textarea name="resume" rows={6} defaultValue={userProfile.resume_text || ''} placeholder="List your professional history, skills, and qualifications here. This will be shown on your public profile..." className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 outline-none transition"></textarea>
               </div>
               <button type="submit" className="bg-indigo-600 text-white rounded-xl px-6 py-2.5 text-sm font-bold shadow-sm hover:bg-indigo-500 transition">Save Profile Data</button>
             </form>
           </div>
+        </div>
+      )}
+
+      {/* VIEW: Public Author Profile */}
+      {currentView === 'profile' && profileUser && (
+        <div className="mx-auto max-w-4xl px-6 py-12">
+          <Link href="/?view=catalog" className="text-sm text-slate-500 hover:text-indigo-600 mb-8 inline-block">← Back to Catalog</Link>
+          
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-10 mb-10">
+            <h1 className="text-4xl font-black text-slate-900 mb-2">{profileUser.name || profileUser.email.split('@')[0]}</h1>
+            <p className="text-lg text-slate-600 mb-6 max-w-2xl">{profileUser.bio || 'No bio provided by this creator.'}</p>
+            
+            <div className="flex items-center gap-4">
+               {profileUser.portfolio_url && (
+                 <a href={profileUser.portfolio_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-lg text-sm font-bold hover:bg-slate-800 transition shadow-sm">
+                   View Portfolio Site ↗
+                 </a>
+               )}
+               <span className="text-slate-400 text-sm font-medium">Contact: {profileUser.email}</span>
+            </div>
+
+            {profileUser.resume_text && (
+               <div className="mt-10 pt-10 border-t border-slate-100">
+                 <h3 className="font-bold text-slate-900 mb-4 text-xl">Resume & Experience</h3>
+                 <div className="prose text-slate-600 whitespace-pre-wrap max-w-none">{profileUser.resume_text}</div>
+               </div>
+            )}
+          </div>
+
+          <h3 className="font-bold text-slate-900 mb-6 text-xl border-b border-slate-200 pb-2">Courses by this Author</h3>
+          {profileCourses.length === 0 ? (
+            <p className="text-slate-500">This author has no published courses yet.</p>
+          ) : (
+            <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+              {profileCourses.map((course: any) => (
+                <Link href={`/?view=read&courseId=${course.id}`} key={course.id} className="group rounded-2xl border border-slate-200 bg-white p-6 shadow-sm hover:shadow-md hover:border-indigo-300 transition cursor-pointer">
+                  <div className="flex items-center justify-between mb-4">
+                    <span className="text-lg font-black text-indigo-600">${(course.price_cents / 100).toFixed(2)}</span>
+                  </div>
+                  <h3 className="text-lg font-bold text-slate-900 line-clamp-1 mb-2 group-hover:text-indigo-600 transition">{course.title}</h3>
+                  <p className="text-sm text-slate-500 leading-relaxed line-clamp-2">{course.description}</p>
+                </Link>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -305,19 +353,21 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
           ) : (
             <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
               {catalogCourses.map((course: any) => (
-                <Link href={`/?view=read&courseId=${course.id}`} key={course.id} className="group flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-6 shadow-sm hover:shadow-md hover:border-indigo-300 transition cursor-pointer">
+                <div key={course.id} className="group flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-6 shadow-sm hover:shadow-md transition">
                   <div>
                     <div className="flex items-center justify-between mb-4">
-                      <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-600">
+                      <Link href={`/?view=profile&email=${encodeURIComponent(course.creator_id)}`} className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-200 hover:text-indigo-700 transition relative z-20">
                         By {course.author_name}
-                      </span>
+                      </Link>
                       <span className="text-lg font-black text-indigo-600">${(course.price_cents / 100).toFixed(2)}</span>
                     </div>
-                    <h3 className="text-lg font-bold text-slate-900 line-clamp-1 mb-2 group-hover:text-indigo-600 transition">{course.title}</h3>
-                    <p className="text-sm text-slate-500 leading-relaxed line-clamp-3 mb-6">{course.description}</p>
+                    <Link href={`/?view=read&courseId=${course.id}`} className="block">
+                      <h3 className="text-lg font-bold text-slate-900 line-clamp-1 mb-2 group-hover:text-indigo-600 transition">{course.title}</h3>
+                      <p className="text-sm text-slate-500 leading-relaxed line-clamp-3 mb-6">{course.description}</p>
+                    </Link>
                   </div>
-                  <div className="mt-4 font-semibold text-sm text-indigo-600 flex items-center gap-1 group-hover:gap-2 transition-all">Read Course →</div>
-                </Link>
+                  <Link href={`/?view=read&courseId=${course.id}`} className="mt-4 font-semibold text-sm text-indigo-600 flex items-center gap-1 group-hover:gap-2 transition-all block">Read Course →</Link>
+                </div>
               ))}
             </div>
           )}
@@ -333,7 +383,9 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
               <div className="absolute top-0 left-0 w-full bg-yellow-400 text-yellow-900 text-xs font-bold py-1">UNPUBLISHED DRAFT PREVIEW</div>
             )}
             <div className="mt-4">
-              <span className="inline-block px-3 py-1 bg-indigo-50 text-indigo-700 text-xs font-bold rounded-full mb-4">By {activeCourse.author_name}</span>
+              <Link href={`/?view=profile&email=${encodeURIComponent(activeCourse.creator_id)}`} className="inline-block px-4 py-1.5 bg-indigo-50 text-indigo-700 text-sm font-bold rounded-full mb-4 hover:bg-indigo-100 hover:text-indigo-900 transition">
+                By {activeCourse.author_name}
+              </Link>
               <h1 className="text-4xl font-black text-slate-900 mb-4 tracking-tight">{activeCourse.title}</h1>
               <p className="text-lg text-slate-600 max-w-xl mx-auto">{activeCourse.description}</p>
             </div>
@@ -391,18 +443,8 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
              <div>
                 <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm sticky top-24">
                   <h3 className="font-bold text-slate-900 mb-6 text-lg">Add New Lesson</h3>
-                  <form action={createLessonAction} className="space-y-5">
-                    <input type="hidden" name="courseId" value={activeCourse.id} />
-                    <div>
-                      <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Lesson Title</label>
-                      <input type="text" name="title" required placeholder="e.g. Introduction to logic" className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-500 outline-none transition" />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold uppercase text-slate-600 mb-1.5">Lesson Content</label>
-                      <RichTextEditor name="content" />
-                    </div>
-                    <button type="submit" className="w-full bg-indigo-600 text-white rounded-xl py-3 text-sm font-bold shadow-sm hover:bg-indigo-500 transition">Save Lesson Record</button>
-                  </form>
+                  {/* We now use the isolated Client Component to force the form to clear! */}
+                  <AddLessonForm courseId={activeCourse.id} />
                 </div>
              </div>
            </div>
