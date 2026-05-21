@@ -14,3 +14,12 @@ export async function updateLessonOrderAction(updates: { id: number; sort_order:
     console.error('Failed to update lesson order:', error);
   }
 }
+
+export async function deleteLessonAction(lessonId: number) {
+  try {
+    await query('DELETE FROM lessons WHERE id = $1', [lessonId]);
+    revalidatePath('/');
+  } catch (error) {
+    console.error('Failed to delete lesson:', error);
+  }
+}

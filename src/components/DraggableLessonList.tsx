@@ -32,10 +32,22 @@ function SortableLessonItem({ lesson, index }: { lesson: any, index: number }) {
           </div>
         </div>
       </div>
-      <div className="text-slate-300 group-hover:text-indigo-500 transition-colors pr-2 flex flex-col items-center gap-1">
-         <span className="text-[10px] font-bold uppercase tracking-wider">Drag</span>
-         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="9" x2="20" y2="9"></line><line x1="4" y1="15" x2="20" y2="15"></line></svg>
-      </div>
+      <div className="flex items-center gap-3 pr-2">
+        <button 
+          onClick={(e) => {
+             e.stopPropagation();
+             deleteLessonAction(lesson.id);
+          }}
+          className="text-slate-300 hover:text-rose-500 transition p-2 cursor-pointer relative z-20"
+          title="Delete Lesson"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
+        </button>
+        <div className="text-slate-300 group-hover:text-indigo-500 transition-colors flex flex-col items-center gap-1 cursor-grab">
+           <span className="text-[10px] font-bold uppercase tracking-wider">Drag</span>
+           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="9" x2="20" y2="9"></line><line x1="4" y1="15" x2="20" y2="15"></line></svg>
+        </div>
+      </div>
     </div>
   );
 }
