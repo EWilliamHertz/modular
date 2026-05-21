@@ -331,16 +331,25 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
               ) : (
                 <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
                   {searchResults.courses.map((course: any) => (
-                    <Link href={`/?view=read&courseId=${course.id}`} key={course.id} className="group flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-6 shadow-sm hover:shadow-md hover:border-indigo-300 transition cursor-pointer">
+                    <Link href={`/?view=read&courseId=${course.id}`} key={course.id} className="group flex flex-col justify-between rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-sm hover:shadow-md hover:border-indigo-300 transition cursor-pointer">
                       <div>
-                        <div className="flex items-center justify-between mb-4">
-                          <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-600">By {course.author_name}</span>
-                          <span className="text-lg font-black text-indigo-600">${(course.price_cents / 100).toFixed(2)}</span>
+                        {course.image_url ? (
+                          <img src={course.image_url} alt={course.title} className="w-full h-40 object-cover border-b border-slate-100" />
+                        ) : (
+                          <div className="w-full h-40 bg-gradient-to-br from-indigo-50 to-slate-100 flex items-center justify-center border-b border-slate-100">
+                             <span className="text-indigo-200 font-black text-4xl">μ</span>
+                          </div>
+                        )}
+                        <div className="p-6">
+                          <div className="flex items-center justify-between mb-4">
+                            <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-600">By {course.author_name}</span>
+                            <span className="text-lg font-black text-indigo-600">${(course.price_cents / 100).toFixed(2)}</span>
+                          </div>
+                          <h3 className="text-lg font-bold text-slate-900 line-clamp-1 mb-2 group-hover:text-indigo-600 transition">{course.title}</h3>
+                          <p className="text-sm text-slate-500 leading-relaxed line-clamp-3 mb-6">{course.description}</p>
                         </div>
-                        <h3 className="text-lg font-bold text-slate-900 line-clamp-1 mb-2 group-hover:text-indigo-600 transition">{course.title}</h3>
-                        <p className="text-sm text-slate-500 leading-relaxed line-clamp-3 mb-6">{course.description}</p>
                       </div>
-                      <div className="mt-4 font-semibold text-sm text-indigo-600 flex items-center gap-1 group-hover:gap-2 transition-all">Read Course →</div>
+                      <div className="px-6 pb-6 mt-auto font-semibold text-sm text-indigo-600 flex items-center gap-1 group-hover:gap-2 transition-all">Read Course →</div>
                     </Link>
                   ))}
                 </div>
@@ -463,15 +472,24 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
               ) : (
                 <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
                   {profileCourses.map((course: any) => (
-                    <Link href={`/?view=read&courseId=${course.id}`} key={course.id} className="group rounded-2xl border border-slate-200 bg-white p-6 shadow-sm hover:shadow-md hover:border-indigo-300 transition cursor-pointer flex flex-col justify-between">
+                    <Link href={`/?view=read&courseId=${course.id}`} key={course.id} className="group rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-sm hover:shadow-md hover:border-indigo-300 transition cursor-pointer flex flex-col justify-between">
                       <div>
-                        <div className="flex items-center justify-between mb-4">
-                          <span className="text-lg font-black text-indigo-600">${(course.price_cents / 100).toFixed(2)}</span>
+                        {course.image_url ? (
+                          <img src={course.image_url} alt={course.title} className="w-full h-40 object-cover border-b border-slate-100" />
+                        ) : (
+                          <div className="w-full h-40 bg-gradient-to-br from-indigo-50 to-slate-100 flex items-center justify-center border-b border-slate-100">
+                             <span className="text-indigo-200 font-black text-4xl">μ</span>
+                          </div>
+                        )}
+                        <div className="p-6">
+                          <div className="flex items-center justify-between mb-4">
+                            <span className="text-lg font-black text-indigo-600">${(course.price_cents / 100).toFixed(2)}</span>
+                          </div>
+                          <h3 className="text-lg font-bold text-slate-900 line-clamp-1 mb-2 group-hover:text-indigo-600 transition">{course.title}</h3>
+                          <p className="text-sm text-slate-500 leading-relaxed line-clamp-2 mb-4">{course.description}</p>
                         </div>
-                        <h3 className="text-lg font-bold text-slate-900 line-clamp-1 mb-2 group-hover:text-indigo-600 transition">{course.title}</h3>
-                        <p className="text-sm text-slate-500 leading-relaxed line-clamp-2 mb-4">{course.description}</p>
                       </div>
-                      <div className="text-sm font-semibold text-indigo-600">Explore Curriculum →</div>
+                      <div className="px-6 pb-6 mt-auto text-sm font-semibold text-indigo-600">Explore Curriculum →</div>
                     </Link>
                   ))}
                 </div>
@@ -493,20 +511,29 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
           ) : (
             <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
               {catalogCourses.map((course: any) => (
-                <div key={course.id} className="group flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-6 shadow-sm hover:shadow-md transition">
+                <div key={course.id} className="group flex flex-col justify-between rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-sm hover:shadow-md transition">
                   <div>
-                    <div className="flex items-center justify-between mb-4">
-                      <Link href={`/?view=profile&email=${encodeURIComponent(course.creator_id)}`} className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-200 hover:text-indigo-700 transition relative z-20">
-                        By {course.author_name}
+                    {course.image_url ? (
+                      <img src={course.image_url} alt={course.title} className="w-full h-40 object-cover border-b border-slate-100" />
+                    ) : (
+                      <div className="w-full h-40 bg-gradient-to-br from-indigo-50 to-slate-100 flex items-center justify-center border-b border-slate-100">
+                         <span className="text-indigo-200 font-black text-4xl">μ</span>
+                      </div>
+                    )}
+                    <div className="p-6">
+                      <div className="flex items-center justify-between mb-4">
+                        <Link href={`/?view=profile&email=${encodeURIComponent(course.creator_id)}`} className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-200 hover:text-indigo-700 transition relative z-20">
+                          By {course.author_name}
+                        </Link>
+                        <span className="text-lg font-black text-indigo-600">${(course.price_cents / 100).toFixed(2)}</span>
+                      </div>
+                      <Link href={`/?view=read&courseId=${course.id}`} className="block">
+                        <h3 className="text-lg font-bold text-slate-900 line-clamp-1 mb-2 group-hover:text-indigo-600 transition">{course.title}</h3>
+                        <p className="text-sm text-slate-500 leading-relaxed line-clamp-3 mb-6">{course.description}</p>
                       </Link>
-                      <span className="text-lg font-black text-indigo-600">${(course.price_cents / 100).toFixed(2)}</span>
                     </div>
-                    <Link href={`/?view=read&courseId=${course.id}`} className="block">
-                      <h3 className="text-lg font-bold text-slate-900 line-clamp-1 mb-2 group-hover:text-indigo-600 transition">{course.title}</h3>
-                      <p className="text-sm text-slate-500 leading-relaxed line-clamp-3 mb-6">{course.description}</p>
-                    </Link>
                   </div>
-                  <Link href={`/?view=read&courseId=${course.id}`} className="mt-4 font-semibold text-sm text-indigo-600 flex items-center gap-1 group-hover:gap-2 transition-all block">Read Course →</Link>
+                  <Link href={`/?view=read&courseId=${course.id}`} className="px-6 pb-6 mt-auto font-semibold text-sm text-indigo-600 flex items-center gap-1 group-hover:gap-2 transition-all block">Read Course →</Link>
                 </div>
               ))}
             </div>
@@ -623,17 +650,18 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
                          <span className="text-indigo-200 font-black text-4xl">μ</span>
                       </div>
                     )}
-                    <div className="p-6 pb-2">
+                    <div className="p-6 pb-4">
                       <div className="flex items-center justify-between mb-3">
-                      <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${course.is_published ? 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/10' : 'bg-slate-100 text-slate-600'}`}>
-                        {course.is_published ? 'Published' : 'Draft'}
-                      </span>
-                      <span className="text-lg font-black text-slate-900">${(course.price_cents / 100).toFixed(2)}</span>
+                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${course.is_published ? 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/10' : 'bg-slate-100 text-slate-600'}`}>
+                          {course.is_published ? 'Published' : 'Draft'}
+                        </span>
+                        <span className="text-lg font-black text-slate-900">${(course.price_cents / 100).toFixed(2)}</span>
+                      </div>
+                      <h3 className="text-lg font-bold text-slate-900 line-clamp-1 mb-2">{course.title}</h3>
+                      <p className="text-sm text-slate-500 leading-relaxed line-clamp-3 mb-0">{course.description}</p>
                     </div>
-                    <h3 className="text-lg font-bold text-slate-900 line-clamp-1 mb-2">{course.title}</h3>
-                    <p className="text-sm text-slate-500 leading-relaxed line-clamp-3 mb-6">{course.description}</p>
                   </div>
-                  <div className="border-t border-slate-100 pt-4 flex items-center justify-between text-xs">
+                  <div className="bg-slate-50 border-t border-slate-100 px-6 py-4 flex items-center justify-between text-xs mt-auto">
                     <Link href={`/?view=editor&courseId=${course.id}`} className="text-indigo-600 font-bold flex items-center gap-1 hover:gap-2 transition-all">Edit Course Builder →</Link>
                     <form action={deleteCourseAction}>
                       <input type="hidden" name="courseId" value={course.id} />
