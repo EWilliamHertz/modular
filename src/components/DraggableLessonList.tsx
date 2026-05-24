@@ -5,6 +5,7 @@ import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, us
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { updateLessonOrderAction, deleteLessonAction } from '@/app/actions';
+import toast from 'react-hot-toast';
 
 function SortableLessonItem({ lesson, index }: { lesson: any, index: number }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: lesson.id });
@@ -33,14 +34,15 @@ function SortableLessonItem({ lesson, index }: { lesson: any, index: number }) {
         </div>
       </div>
       <div className="flex items-center gap-3 pr-2">
-        <button 
-          onClick={(e) => {
-             e.stopPropagation();
-             deleteLessonAction(lesson.id);
-          }}
-          className="text-slate-300 hover:text-rose-500 transition p-2 cursor-pointer relative z-20"
-          title="Delete Lesson"
-        >
+        <button 
+          onClick={async (e) => {
+             e.stopPropagation();
+             await deleteLessonAction(lesson.id);
+             toast.success('Lesson deleted!');
+          }}
+          className="text-slate-300 hover:text-rose-500 transition p-2 cursor-pointer relative z-20"
+          title="Delete Lesson"
+        >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
         </button>
         <div className="text-slate-300 group-hover:text-indigo-500 transition-colors flex flex-col items-center gap-1 cursor-grab">
@@ -83,6 +85,7 @@ export default function DraggableLessonList({ initialLessons }: { initialLessons
 
       // Fire server action silently in the background
       await updateLessonOrderAction(updates);
+      toast.success('Lesson order updated!');
     }
   }
 

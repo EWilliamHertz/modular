@@ -3,6 +3,7 @@
 import { useState, useRef } from 'react';
 import RichTextEditor from './RichTextEditor';
 import { createLessonAction } from '@/app/actions';
+import toast from 'react-hot-toast';
 
 export default function AddLessonForm({ courseId }: { courseId: number }) {
   const [resetKey, setResetKey] = useState(0);
@@ -12,6 +13,7 @@ export default function AddLessonForm({ courseId }: { courseId: number }) {
   async function handleSubmit(formData: FormData) {
     setIsSubmitting(true);
     await createLessonAction(formData);
+    toast.success('Lesson added successfully!');
     
     // Clear the standard inputs
     formRef.current?.reset();

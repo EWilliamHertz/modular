@@ -5,6 +5,7 @@ import DraggableLessonList from "@/components/DraggableLessonList";
 import AddLessonForm from "@/components/AddLessonForm";
 import ProfileSettingsForm from "@/components/ProfileSettingsForm";
 import CreateCourseForm from "@/components/CreateCourseForm";
+import PortfolioGallery from "@/components/PortfolioGallery";
 import { auth, signIn, signOut } from "@/auth";
 
 async function ensureDatabaseSchema() {
@@ -27,6 +28,7 @@ async function ensureDatabaseSchema() {
     await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS show_portfolio BOOLEAN DEFAULT true;`);
     await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS portfolio_items JSONB DEFAULT '[]';`);
     await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS resume_pdf_data TEXT;`);
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_picture_url VARCHAR(255);`);
     
     await query(`
       CREATE TABLE IF NOT EXISTS courses (
@@ -72,12 +74,13 @@ async function updateProfileAction(formData: FormData) {
   const showPortfolio = formData.get('show_portfolio') === 'true';
   const portfolioItems = formData.get('portfolio_items') || '[]';
   const resumePdfData = formData.get('resume_pdf_data') || '';
+  const profilePictureUrl = formData.get('profile_picture_url') || '';
 
   await query(`
     UPDATE users 
-    SET name = $1, bio = $2, resume_text = $3, show_resume = $4, show_portfolio = $5, portfolio_items = $6, resume_pdf_data = $7
-    WHERE email = $8
-  `, [name, bio, resumeText, showResume, showPortfolio, portfolioItems, resumePdfData, session.user.email]);
+    SET name = $1, bio = $2, resume_text = $3, show_resume = $4, show_portfolio = $5, portfolio_items = $6::jsonb, resume_pdf_data = $7, profile_picture_url = $8
+    WHERE email = $9
+  `, [name, bio, resumeText, showResume, showPortfolio, portfolioItems, resumePdfData, profilePictureUrl, session.user.email]);
   
   revalidatePath('/');
 }
@@ -227,7 +230,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
             <span className="hidden sm:inline">Course<span className="text-indigo-600 font-medium">Builder</span></span>
           </Link>
 
-     {/* Global Search Bar (No Icon, Right-Shifted Text) */}
+          {/* Global Search Bar (No Icon, Right-Shifted Text) */}
           <form action="/" method="GET" className="flex-1 max-w-md mx-4 sm:mx-8 group">
             <input type="hidden" name="view" value="search" />
             <input 
@@ -238,6 +241,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
               className="w-full bg-slate-100 border border-slate-200 rounded-full pl-8 pr-6 py-2 text-sm focus:bg-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all shadow-sm group-hover:shadow-md" 
             />
           </form>     
+          
           <div className="flex items-center gap-4 sm:gap-6 flex-shrink-0">
             {isLoggedIn ? (
               <>
@@ -261,7 +265,6 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
       {/* VIEW: Gentle Landing Page */}
       {currentView === 'landing' && (
         <div className="relative isolate overflow-hidden">
-          {/* Soft background aesthetic */}
           <div className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-indigo-50/50 via-white to-white"></div>
           
           <div className="mx-auto max-w-7xl px-6 pt-24 pb-32 text-center lg:px-8">
@@ -299,7 +302,6 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
           </div>
 
           <div className="space-y-16">
-            {/* User Matches */}
             <section>
               <h2 className="text-xl font-bold text-slate-900 mb-6 flex items-center gap-2">
                 <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-md text-sm">{searchResults.users.length}</span>
@@ -320,7 +322,6 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
               )}
             </section>
 
-            {/* Course Matches */}
             <section>
               <h2 className="text-xl font-bold text-slate-900 mb-6 flex items-center gap-2">
                 <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-md text-sm">{searchResults.courses.length}</span>
@@ -389,8 +390,15 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
       {/* VIEW: Settings */}
       {currentView === 'settings' && userProfile && (
         <div className="mx-auto max-w-3xl px-6 py-12">
-          <h1 className="text-3xl font-extrabold tracking-tight text-slate-900 mb-2">Creator Profile & Portfolio</h1>
-          <p className="text-sm text-slate-500 mb-8">Manage how you present your professional brand to your students.</p>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-8">
+            <div>
+              <h1 className="text-3xl font-extrabold tracking-tight text-slate-900 mb-2">Creator Profile & Portfolio</h1>
+              <p className="text-sm text-slate-500">Manage how you present your professional brand to your students.</p>
+            </div>
+            <Link href={`/?view=profile&email=${encodeURIComponent(userProfile.email)}`} className="mt-4 sm:mt-0 inline-flex items-center gap-2 bg-indigo-50 text-indigo-700 px-5 py-2.5 rounded-full text-sm font-bold hover:bg-indigo-100 transition border border-indigo-100">
+              View Public Profile ↗
+            </Link>
+          </div>
           
           <ProfileSettingsForm userProfile={userProfile} action={updateProfileAction} />
         </div>
@@ -400,13 +408,33 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
       {currentView === 'profile' && profileUser && (
         <div className="mx-auto max-w-4xl px-6 py-12">
           
-          <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-10 mb-10 text-center">
-            <h1 className="text-4xl font-black text-slate-900 mb-4">{profileUser.name || profileUser.email.split('@')[0]}</h1>
-            <p className="text-lg text-slate-600 mb-6 max-w-2xl mx-auto">{profileUser.bio || 'Educator and creator.'}</p>
-            <div className="flex items-center justify-center gap-4">
-               <a href={`mailto:${profileUser.email}`} className="px-5 py-2.5 bg-slate-100 text-slate-700 rounded-full text-sm font-bold hover:bg-slate-200 transition shadow-sm">
-                 Contact Me
-               </a>
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden mb-12 text-center relative">
+            {/* Huge Profile Banner */}
+            <div className="h-48 w-full bg-gradient-to-r from-indigo-500 to-violet-500 relative">
+               {profileUser.profile_picture_url && (
+                  <img src={profileUser.profile_picture_url} alt="Cover" className="absolute inset-0 w-full h-full object-cover opacity-30 mix-blend-overlay" />
+               )}
+            </div>
+            
+            {/* Overlapping Avatar */}
+            <div className="relative -mt-20 flex justify-center mb-6">
+                {profileUser.profile_picture_url ? (
+                    <img src={profileUser.profile_picture_url} alt="Profile" className="w-40 h-40 object-cover rounded-full border-4 border-white shadow-xl bg-white" />
+                ) : (
+                    <div className="w-40 h-40 rounded-full border-4 border-white shadow-xl bg-indigo-100 text-indigo-500 flex items-center justify-center text-6xl font-black">
+                        {profileUser.name ? profileUser.name[0] : profileUser.email[0].toUpperCase()}
+                    </div>
+                )}
+            </div>
+
+            <div className="px-10 pb-10">
+                <h1 className="text-4xl font-black text-slate-900 mb-4">{profileUser.name || profileUser.email.split('@')[0]}</h1>
+                <p className="text-lg text-slate-600 mb-8 max-w-2xl mx-auto whitespace-pre-wrap">{profileUser.bio || 'Educator and creator.'}</p>
+                <div className="flex items-center justify-center gap-4">
+                   <a href={`mailto:${profileUser.email}`} className="px-6 py-3 bg-slate-900 text-white rounded-full text-sm font-bold hover:bg-slate-800 transition shadow-md">
+                     Contact Me
+                   </a>
+                </div>
             </div>
           </div>
 
@@ -434,7 +462,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
                </section>
             )}
 
-            {/* Conditional Portfolio Block */}
+            {/* Conditional Portfolio Block with Interactive Gallery */}
             {profileUser.show_portfolio && profileUser.portfolio_items && (
                <section>
                  <h3 className="font-bold text-slate-900 mb-6 text-2xl">This person is an entrepreneur and has the following as his portfolio:</h3>
@@ -442,24 +470,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
                    const items = typeof profileUser.portfolio_items === 'string' ? JSON.parse(profileUser.portfolio_items) : profileUser.portfolio_items;
                    if (items.length === 0) return <p className="text-slate-500 italic bg-slate-50 p-6 rounded-xl border border-slate-200">Portfolio is currently being updated.</p>;
                    
-                   return (
-                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                       {items.map((item: any, idx: number) => (
-                         <a key={idx} href={item.link} target="_blank" rel="noopener noreferrer" className="group block border border-slate-200 rounded-2xl overflow-hidden hover:shadow-lg transition hover:border-indigo-300 bg-white flex flex-col h-full">
-                           {item.image ? (
-                             <img src={item.image} alt={item.title} className="w-full h-48 object-cover border-b border-slate-100" />
-                           ) : (
-                             <div className="w-full h-48 bg-slate-100 flex items-center justify-center text-slate-400">No Image</div>
-                           )}
-                           <div className="p-6 flex-1 flex flex-col">
-                             <h4 className="font-bold text-slate-900 text-lg mb-2 group-hover:text-indigo-600 transition">{item.title}</h4>
-                             <p className="text-sm text-slate-600 mb-4 flex-1">{item.description}</p>
-                             <div className="text-xs font-bold text-indigo-500 uppercase tracking-wider">Visit Project →</div>
-                           </div>
-                         </a>
-                       ))}
-                     </div>
-                   );
+                   return <PortfolioGallery items={items} />;
                  })()}
                </section>
             )}

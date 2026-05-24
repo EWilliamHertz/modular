@@ -2,6 +2,7 @@
 
 import { useState, useRef } from 'react';
 import { Upload, CheckCircle2, Image as ImageIcon } from 'lucide-react';
+import toast from 'react-hot-toast';
 
 export default function CreateCourseForm({ action }: { action: (formData: FormData) => Promise<void> }) {
   const formRef = useRef<HTMLFormElement>(null);
@@ -35,6 +36,7 @@ export default function CreateCourseForm({ action }: { action: (formData: FormDa
     setIsSubmitting(true);
     formData.append('image_url', imageUrl);
     await action(formData);
+    toast.success('Course created successfully!');
     formRef.current?.reset();
     setImageUrl('');
     setIsSubmitting(false);
